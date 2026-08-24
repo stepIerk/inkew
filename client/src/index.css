@@ -1,0 +1,37 @@
+:root {
+  --toolbar-bg: #f5f4f3;
+  --toolbar-width: 220px;
+  --border: #e0dedc;
+  --text: #3a3a3a;
+  --accent: #1b7ef5;
+
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: light;
+  color: var(--text);
+  background: #ffffff;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  height: 100svh;
+  min-height: 100vh;
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+h1 {
+  font-size: 24px;
+}
