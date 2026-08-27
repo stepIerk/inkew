@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "konva": "^10.3.1",
+    "onnxruntime-web": "^1.29.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-konva": "^19.2.5"

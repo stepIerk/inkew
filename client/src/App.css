@@ -88,6 +88,58 @@
 }
 /* --------------------------------- */
 
+/* --- Стили окна выбора метки символа --- */
+.labels-window {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  width: 220px;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.labels-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.label-btn {
+  height: 40px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.label-btn:hover {
+  border-color: #8a8a8a;
+}
+
+.label-btn.active {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: transparent;
+}
+
+.save-status {
+  font-size: 12px;
+  color: #8a8a8a;
+  line-height: 1.4;
+}
+/* --------------------------------- */
+
 .brand {
   margin: 0;
   font-size: 22px;
