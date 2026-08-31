@@ -1,4 +1,4 @@
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, closeSync, openSync, readSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import react from '@vitejs/plugin-react'
@@ -46,8 +46,25 @@ function symbolsDataPlugin() {
               return
             }
 
-            // Дописываем строку в конец файла (файл не перезаписывается)
-            appendFileSync(DATA_FILE, JSON.stringify(data) + '\n', 'utf8')
+            // Дописываем строку в конец файла (файл не перезаписывается).
+            // Если файл не заканчивается переводом строки — добавляем его,
+            // иначе новая запись склеится с последней строкой и сломает JSONL.
+            let record = JSON.stringify(data) + '\n'
+            try {
+              const stat = statSync(DATA_FILE)
+              if (stat.size > 0) {
+                const fd = openSync(DATA_FILE, 'r')
+                const lastByte = new Uint8Array(1)
+                readSync(fd, lastByte, 0, 1, stat.size - 1)
+                closeSync(fd)
+                if (lastByte[0] !== 0x0a) {
+                  record = '\n' + record
+                }
+              }
+            } catch {
+              // файла ещё нет — просто создаём записью
+            }
+            appendFileSync(DATA_FILE, record, 'utf8')
 
             res.setHeader('Content-Type', 'application/json')
             res.end(JSON.stringify({ ok: true, saved: data }))
@@ -69,6 +86,10 @@ function symbolsDataPlugin() {
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Репозиторий разворачивается на GitHub Pages:
+  // https://stepierk.github.io/inkew/ — база нужна, чтобы ассеты
+  // (JS/CSS/wasm) резолвились относительно подпапки репозитория.
+  base: '/inkew/',
   plugins: [react(), symbolsDataPlugin()],
   optimizeDeps: {
     exclude: ['onnxruntime-web'],

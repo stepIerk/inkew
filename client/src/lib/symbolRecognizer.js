@@ -2,11 +2,30 @@ import * as ort from 'onnxruntime-web'
 
 ort.env.wasm.numThreads = 1
 
-const MODEL_URL = '/symbols.onnx'
-const CLASSES_URL = '/classes.json'
+// BASE_URL учитывает base из vite.config.js (например, '/inkew/' на GitHub
+// Pages): абсолютные пути вида '/symbols.onnx' ломаются на сайтах, живущих
+// в подпапке домена, — fetch уходил в корень и получал 404.
+const BASE_URL = import.meta.env.BASE_URL || '/'
+const MODEL_URL = `${BASE_URL}symbols.onnx`
+// Когда torch.onnx.export / onnx.save_model сохраняют модель во «внешнем» формате,
+// веса лежат отдельным файлом рядом: symbols.onnx.data. Если такого файла нет —
+// модель однострочная, и всё работает как раньше.
+const DATA_URL = `${MODEL_URL}.data`
+const CLASSES_URL = `${BASE_URL}classes.json`
 
 let sessionPromise = null
 let classesPromise = null
+
+/** fetch файла; возвращает ArrayBuffer либо null (404 / сетевая ошибка). */
+async function tryFetchBuffer(url) {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return null
+    return await res.arrayBuffer()
+  } catch {
+    return null
+  }
+}
 
 /**
  * Ленивая инициализация ONNX-сессии. Вызывать заранее (например, при
@@ -16,9 +35,42 @@ let classesPromise = null
  */
 export function loadModel() {
   if (!sessionPromise) {
-    sessionPromise = ort.InferenceSession.create(MODEL_URL, {
-      executionProviders: ['webgl', 'wasm'],
-    })
+    sessionPromise = (async () => {
+      const modelBuffer = await tryFetchBuffer(MODEL_URL)
+      if (!modelBuffer) {
+        throw new Error(`Не удалось загрузить модель: ${MODEL_URL}`)
+      }
+
+      const options = {
+        executionProviders: ['webgl', 'wasm'],
+      }
+
+      try {
+        // Самый частый случай — модель уже однострочная (self-contained).
+        return await ort.InferenceSession.create(modelBuffer, options)
+      } catch (err) {
+        const msg = err?.message ?? ''
+        const externalDataProblem = /external data|MountedFiles|deserialize tensor|\.data"/i.test(msg)
+        if (!externalDataProblem) throw err
+
+        // Внешний формат: веса лежат рядом в symbols.onnx.data, но в браузере
+        // onnxruntime-web не подхватывает их по URL (в отличие от Node.js) —
+        // отдаём файл в память через опцию externalData.
+        const externalDataBuffer = await tryFetchBuffer(DATA_URL)
+        if (externalDataBuffer) {
+          return await ort.InferenceSession.create(modelBuffer, {
+            ...options,
+            externalData: [{ path: 'symbols.onnx.data', data: externalDataBuffer }],
+          })
+        }
+
+        throw new Error(
+          `Модель "${MODEL_URL}" сохранена во внешнем формате: веса лежат в отдельном файле "${DATA_URL}", но он не найден. ` +
+            'Положите symbols.onnx.data рядом с моделью в public/ или пере-экспортируйте модель в один файл.',
+          { cause: err },
+        )
+      }
+    })()
   }
   return sessionPromise
 }
@@ -35,15 +87,22 @@ export function loadClasses() {
   return classesPromise
 }
 
-// classes.json, сохранённый ноутбуком — это словарь {"0": "0", "1": "1", "2": "NS", ...}
+function sortDictToArray(dict) {
+  return Object.entries(dict)
+    .map(([idx, label]) => [Number(idx), label])
+    .sort((a, b) => a[0] - b[0])
+    .map(([, label]) => label)
+}
+
+// classes.json ноутбук сохраняет в виде:
+//   { "classes": ["0","1","2","NS"], "idx_to_class": {"0": "0", ...}, ... }
 // (индекс выхода модели -> label). Приводим к плотному массиву:
 // indexToLabel[i] совпадает с idx_to_class[i] из ноутбука.
 function normalizeClasses(raw) {
   if (Array.isArray(raw)) return raw
-  return Object.entries(raw)
-    .map(([idx, label]) => [Number(idx), label])
-    .sort((a, b) => a[0] - b[0])
-    .map(([, label]) => label)
+  if (raw && Array.isArray(raw.classes)) return raw.classes
+  if (raw && raw.idx_to_class) return sortDictToArray(raw.idx_to_class)
+  return sortDictToArray(raw)
 }
 
 function softmax(logits) {

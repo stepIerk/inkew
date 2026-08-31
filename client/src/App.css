@@ -22,6 +22,44 @@
   touch-action: none;
 }
 
+/* --- Бар режимов (сверху по центру) --- */
+.mode-bar {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  gap: 4px;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+}
+
+.mode-btn {
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.mode-btn:hover {
+  border-color: var(--border);
+}
+
+.mode-btn.active {
+  background: var(--accent);
+  border-color: transparent;
+  color: #ffffff;
+}
+
 .toolbar {
   position: absolute;
   top: 12px;
@@ -88,12 +126,22 @@
 }
 /* --------------------------------- */
 
-/* --- Стили окна выбора метки символа --- */
-.labels-window {
+/* --- Правая колонка: распознавание + метка символа --- */
+.right-column {
   position: absolute;
   top: 12px;
   right: 12px;
   z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+
+/* --- Стили окна распознавания --- */
+.recognition-window {
   width: 220px;
   background: var(--toolbar-bg);
   border: 1px solid var(--border);
@@ -103,6 +151,48 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex-shrink: 0;
+}
+
+.recognition-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+
+/* --- Подтверждение примера в учебном режиме --- */
+.confirm-row {
+  display: flex;
+  gap: 8px;
+}
+
+.confirm-row .action-btn {
+  flex: 1;
+  text-align: center;
+}
+
+.action-btn.confirm-btn {
+  background: #d3f9d8;
+  color: #2b8a3e;
+  border-color: #b2f2bb;
+}
+
+/* --- Стили окна выбора метки символа --- */
+.labels-window {
+  width: 220px;
+  background: var(--toolbar-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
 }
 
 .labels-grid {
@@ -233,4 +323,37 @@ input[type='range'] {
   font-size: 12px;
   color: #8a8a8a;
   line-height: 1.5;
+}
+
+/* --- Адаптив для телефонов: панели не должны наезжать на бар режимов --- */
+@media (max-width: 720px) {
+  .mode-bar {
+    left: 12px;
+    right: 12px;
+    transform: none;
+    justify-content: space-between;
+  }
+
+  .mode-btn {
+    flex: 1;
+    padding: 8px 6px;
+  }
+
+  .toolbar {
+    top: 64px;
+    width: 200px;
+  }
+
+  .right-column {
+    top: 64px;
+  }
+
+  .labels-window,
+  .recognition-window {
+    width: min(220px, calc(100vw - 24px));
+  }
+
+  .debug-window {
+    width: min(260px, calc(100vw - 24px));
+  }
 }

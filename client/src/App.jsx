@@ -36,6 +36,25 @@ const COLORS = [
 
 let lineId = 0
 
+// === РЕЖИМЫ РАБОТЫ ===
+const MODES = [
+  { id: 'normal', label: '✏️ Рисование' }, // модель отключена — просто рисуем
+  { id: 'smart', label: '🧠 Умный' },      // модель включена — штрихи заменяются текстом
+  { id: 'train', label: '🎓 Обучение' },   // сбор датасета: метка → рисунок → подтверждение
+]
+
+// === КУДА ОТПРАВЛЯТЬ ПРИМЕРЫ ИЗ УЧЕБНОГО РЕЖИМА ===
+// Google Apps Script Web App → Google Sheets (без бэкэнда — страница может
+// жить на GitHub Pages). Как настроить и получить URL: см. инструкции в
+// client/scripts/apps-script-dataset.js и client/README.md.
+// Пустая строка = локальная разработка: POST /api/symbols — Vite-middleware
+// дописывает строку в client/data.jsonl.
+const DATASET_ENDPOINT = 'https://script.google.com/macros/s/AKfycbwahEITPFx4uGpS_5NpANnBWZaYOacuW2h2bjTkEpN2PtWs0FLK9gyX_rr6i0QgMff9Pw/exec'
+//https://docs.google.com/spreadsheets/d/1P1kb8aPGgxlozL_KDCqOImTNqQquh7DjbkKOZdJHrGM/edit
+// Ключ localStorage-очереди: примеры, не ушедшие в сеть (нет интернета на
+// телефоне), досылаются при следующем открытии страницы.
+const DATASET_QUEUE_KEY = 'inkew:dataset-queue'
+
 // === ХЕЛПЕРЫ ДЛЯ ПОДГОТОВКИ ДАННЫХ ===
 
 function getStrokesBBox(strokes) {
@@ -142,6 +161,124 @@ function getWindowSize() {
   return { width: window.innerWidth, height: window.innerHeight }
 }
 
+// Измерение ширины глифа тем же способом, что и в Konva (canvas measureText).
+// Нужна, чтобы текстовый бокс всегда был не уже самого символа: при
+// фиксированной width, если ни один символ строки не влезает в бокс, Konva
+// не добавляет строку в textArr вовсе (см. Text.js::_setTextData) и текст
+// просто не рисуется — именно из-за этого «исчезала» тонкая «1» и узкий «0».
+const measureCtx = document
+  .createElement('canvas')
+  .getContext('2d')
+
+function measureCharWidth(char, fontSize, fontFamily = 'sans-serif') {
+  if (!measureCtx) return fontSize * 0.6
+  measureCtx.font = `${fontSize}px ${fontFamily}`
+  return measureCtx.measureText(char).width
+}
+
+// === Отправка примеров в датасет (модульные функции — не зависят от React) ===
+// Пример всегда попадает в localStorage-очередь и сразу пытается уйти в сеть.
+// Если сеть недоступна (телефон в метро и т.п.) — пример остаётся в очереди
+// и досылается при следующем открытии страницы.
+
+function readQueue() {
+  try {
+    const raw = localStorage.getItem(DATASET_QUEUE_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function writeQueue(queue) {
+  try {
+    localStorage.setItem(DATASET_QUEUE_KEY, JSON.stringify(queue))
+  } catch (err) {
+    console.error('Не удалось записать очередь примеров:', err)
+  }
+}
+
+// Добавляет пример в очередь. Возвращает новый размер очереди.
+function enqueueToQueue(data) {
+  const queue = readQueue()
+  queue.push({ ...data, createdAt: new Date().toISOString() })
+  writeQueue(queue)
+  return queue.length
+}
+
+async function sendExample(data) {
+  if (DATASET_ENDPOINT) {
+    const body = JSON.stringify(data)
+
+    // Шаг 1: обычный CORS-запрос. Apps Script при доступе «все (даже
+    // анонимные)» отдаёт читаемый JSON-ответ — если doPost вернул ошибку,
+    // мы увидим её текст в интерфейсе, а не гадаем по пустой таблице.
+    try {
+      const res = await fetch(DATASET_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body,
+      })
+      const result = await res.json().catch(() => null)
+      if (result && result.ok === false) {
+        throw new Error(`Apps Script: ${result.error || 'неизвестная ошибка'}`)
+      }
+      return
+    } catch (err) {
+      // Шаг 2: если CORS заблокировал запрос (TypeError от браузера) —
+      // отправляем непрозрачным no-cors запросом (доставка без чтения ответа).
+      if (err instanceof TypeError) {
+        await fetch(DATASET_ENDPOINT, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body,
+        })
+        return
+      }
+      throw err
+    }
+  }
+
+  // Локальная разработка (DATASET_ENDPOINT пуст): Vite-middleware дописывает
+  // строку в data.jsonl. Когда endpoint задан, этот путь не используется.
+  const response = await fetch('/api/symbols', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+
+  if (!response.ok) {
+    const errData = await response.json().catch(() => ({}))
+    throw new Error(errData?.error || `Ошибка сервера: ${response.status}`)
+  }
+}
+
+// Пытается отправить все накопленные примеры.
+// Возвращает { delivered, remaining } — сколько ушло и сколько осталось.
+async function flushQueueToNetwork() {
+  const queue = readQueue()
+  if (queue.length === 0) return { delivered: 0, remaining: 0 }
+
+  const remaining = []
+  let delivered = 0
+  for (const item of queue) {
+    try {
+      await sendExample(item)
+      delivered += 1
+    } catch (err) {
+      console.error('Не удалось отправить пример, остаётся в очереди:', err)
+      remaining.push(item)
+    }
+  }
+
+  if (delivered > 0) {
+    writeQueue(remaining)
+  }
+  return { delivered, remaining: remaining.length }
+}
+
 function App() {
   const [size, setSize] = useState(getWindowSize)
   useEffect(() => {
@@ -157,15 +294,22 @@ function App() {
   const [penColor, setPenColor] = useState('#000000')
   const [brushSize, setBrushSize] = useState(6)
 
-  const [jsonInput, setJsonInput] = useState('')
-  const [previewData, setPreviewData] = useState(null)
-  const [jsonError, setJsonError] = useState('')
+  const [previewData, setPreviewData] = useState(null) // точки символа для debug-окна (учебный режим)
   const [selectedLabel, setSelectedLabel] = useState(null)
   const [savedCount, setSavedCount] = useState(0)
+  const [queuedCount, setQueuedCount] = useState(() => readQueue().length)
   const [saveError, setSaveError] = useState('')
 
+  // === Режим работы: 'normal' | 'smart' | 'train' ===
+  const [mode, setMode] = useState('normal')
+
+  // === Пример, ожидающий подтверждения в учебном режиме ===
+  // Рисование блокируется, пока пользователь не нажмёт «Отправить» или «Отменить».
+  const [pendingExample, setPendingExample] = useState(null)
+
   // === Состояние модели распознавания ===
-  const [modelStatus, setModelStatus] = useState('loading') // 'loading' | 'ready' | 'error'
+  // 'idle' — ещё не загружалась (ленивая загрузка при входе в smart/train)
+  const [modelStatus, setModelStatus] = useState('idle') // 'idle' | 'loading' | 'ready' | 'error'
   const [modelError, setModelError] = useState('')
   const [lastRecognition, setLastRecognition] = useState(null)
 
@@ -173,6 +317,13 @@ function App() {
   const symbolBufferRef = useRef([])
   const recognitionTimeoutRef = useRef(null)
   const selectedLabelRef = useRef(null)
+  const pendingExampleRef = useRef(null)
+
+  // Зеркалим mode/pendingExample в ref, чтобы обработчики указателя и
+  // асинхронные колбэки всегда видели актуальные значения.
+  const modeRef = useRef(mode)
+  useEffect(() => { modeRef.current = mode }, [mode])
+  useEffect(() => { pendingExampleRef.current = pendingExample }, [pendingExample])
 
   // Зеркалим lines/texts в ref, чтобы асинхронное распознавание (которое
   // завершается спустя RECOGNITION_TIMEOUT_MS + время инференса) всегда
@@ -188,10 +339,16 @@ function App() {
     selectedLabelRef.current = selectedLabel
   }, [selectedLabel])
 
-  // Прогреваем модель и classes.json при монтировании, чтобы первое
-  // распознавание не тормозило из-за холодной загрузки.
+  // Модель грузим лениво: только при первом входе в smart/train — чтобы в
+  // обычном режиме (особенно с телефона) не качать ~28 МБ wasm зря.
+  const modelLoadingRef = useRef(false)
   useEffect(() => {
+    if (mode !== 'smart' && mode !== 'train') return undefined
+    if (modelLoadingRef.current) return undefined
+    modelLoadingRef.current = true
+
     let cancelled = false
+    setModelStatus('loading')
     Promise.all([loadModel(), loadClasses()])
       .then(() => {
         if (!cancelled) setModelStatus('ready')
@@ -204,7 +361,42 @@ function App() {
         }
       })
     return () => { cancelled = true }
+  }, [mode])
+
+  // При старте досылаем примеры, накопленные во время прошлых сессий без
+  // интернета. Текущий размер очереди уже учтён в начальном queuedCount.
+  useEffect(() => {
+    let cancelled = false
+    flushQueueToNetwork()
+      .then(({ delivered, remaining }) => {
+        if (cancelled) return
+        if (delivered > 0) {
+          setSavedCount((count) => count + delivered)
+        }
+        setQueuedCount(remaining)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
   }, [])
+
+  // Смена режима: сбрасываем незавершённые процессы (ожидающий таймаут
+  // распознавания, пример на подтверждении, буфер штрихов). Метка актуальна
+  // только в учебном режиме — в остальных сбрасываем её. Сброс делаем в
+  // обработчике клика (а не в эффекте), чтобы не гонять лишние рендеры.
+  function applyMode(next) {
+    if (next === modeRef.current) return
+    if (recognitionTimeoutRef.current) {
+      clearTimeout(recognitionTimeoutRef.current)
+      recognitionTimeoutRef.current = null
+    }
+    symbolBufferRef.current = []
+    setPendingExample(null)
+    setPreviewData(null)
+    if (next !== 'train') {
+      setSelectedLabel(null)
+    }
+    setMode(next)
+  }
 
   const isPen = tool === 'pen'
 
@@ -214,23 +406,25 @@ function App() {
     return { x: pos.x, y: pos.y }
   }
 
-  async function saveSymbol(symbolData) {
+  // === Отправка примеров в датасет ===
+  // Сама работа с очередью — в модульных функциях (readQueue / enqueueToQueue /
+  // flushQueueToNetwork), здесь только синхронизация с состоянием интерфейса.
+
+  async function flushQueue() {
+    const { delivered, remaining } = await flushQueueToNetwork()
+    if (delivered > 0) {
+      setSavedCount((count) => count + delivered)
+    }
+    setQueuedCount(remaining)
+  }
+
+  async function submitExample(data) {
+    setQueuedCount(enqueueToQueue(data))
+    setSaveError('')
     try {
-      const response = await fetch('/api/symbols', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(symbolData),
-      })
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}))
-        throw new Error(errData?.error || `Ошибка сервера: ${response.status}`)
-      }
-
-      setSavedCount((count) => count + 1)
-      setSaveError('')
+      await flushQueue()
     } catch (err) {
-      setSaveError(err?.message || 'Не удалось сохранить пример')
+      setSaveError(err?.message || 'Не удалось отправить пример — он сохранён в очереди')
     }
   }
 
@@ -247,14 +441,22 @@ function App() {
     const pad = size * CONFIG.TEXT_PADDING_RATIO
     const fontSize = size * CONFIG.TEXT_SIZE_FACTOR
 
+    // Бокс должен вмещать сам глиф: для тонкой «1» (ширина bbox ≈ 0) или
+    // узкого «0» ширины bbox + паддинги недостаточно, и Konva не отрисует
+    // текст (см. комментарий к measureCharWidth). Расширяем бокс до ширины
+    // глифа, сохраняя центр исходного bbox, чтобы символ встал на место рисунка.
+    const charWidth = measureCharWidth(char, fontSize)
+    const boxWidth = Math.max(width + pad * 2, charWidth + pad * 2)
+    const centerX = bbox.minX + width / 2
+
     setTexts((ts) => [
       ...ts,
       {
         id: lineId++,
         char,
-        x: bbox.minX - pad,
+        x: centerX - boxWidth / 2,
         y: bbox.minY - pad,
-        width: width + pad * 2,
+        width: boxWidth,
         height: height + pad * 2,
         fontSize,
         color,
@@ -262,14 +464,10 @@ function App() {
     ])
   }
 
-  // Прогоняет распознанный символ через модель и, если модель уверена
-  // (см. CONFIDENCE_THRESHOLD / MARGIN_THRESHOLD), заменяет рисунок текстом.
-  //
-  // Замену делаем только если в этот момент НЕ выбрана метка для ручной
-  // разметки — во время сбора датасета удобнее видеть, что именно было
-  // нарисовано, а не то, во что модель это превратила. При этом сам
-  // прогноз всё равно считается и попадает в debug-панель — так видно,
-  // угадывает ли модель твою же новую разметку (полезная проверка на глаз).
+  // Прогоняет распознанный символ через модель. В умном режиме при высокой
+  // уверенности (CONFIDENCE_THRESHOLD / MARGIN_THRESHOLD) заменяет рисунок
+  // текстом. В учебном режиме прогноз — только подсказка в панели
+  // распознавания (видно, угадывает ли модель размечаемые примеры).
   async function runRecognition({ strokeIds, bbox, normalizedPoints, strokesCount, color }) {
     if (modelStatus !== 'ready') return
 
@@ -282,8 +480,8 @@ function App() {
 
       setLastRecognition(result)
 
-      const isLabelingActive = selectedLabelRef.current != null
-      if (!isLabelingActive && result.label !== CONFIG.NS_LABEL) {
+      // Автозамена рисунка текстом — только в умном режиме
+      if (modeRef.current === 'smart' && result.label !== CONFIG.NS_LABEL) {
         replaceStrokesWithText(strokeIds, bbox, result.label, color)
       }
     } catch (err) {
@@ -291,8 +489,12 @@ function App() {
     }
   }
 
+  // Завершает символ: считает bbox/features и либо ставит пример на
+  // подтверждение (учебный режим), либо запускает распознавание (умный).
+  // Возвращает true, если в учебном режиме создан пример на подтверждении
+  // (рисование блокируется до подтверждения/отмены).
   function processSymbol() {
-    if (symbolBufferRef.current.length === 0) return
+    if (symbolBufferRef.current.length === 0) return false
 
     const strokes = [...symbolBufferRef.current]
     symbolBufferRef.current = []
@@ -301,30 +503,39 @@ function App() {
     const resampled = resampleStrokes(strokes, CONFIG.POINTS_COUNT)
     const normalized = normalizePoints(resampled)
 
-    // В файл сохраняем strokesCount, features, bbox (положение/размер на
+    // В датасет сохраняем strokesCount, features, bbox (положение/размер на
     // канвасе — нужен фронтенду, чтобы потом верно разместить распознанный
     // текст на месте рисунка) и выбранную label.
-    const label = selectedLabelRef.current
     const symbolData = {
       strokesCount: strokes.length,
       features: normalized,
       bbox,
-      label,
+      label: selectedLabelRef.current,
     }
 
     console.log(`📝 Распознан новый символ (${CONFIG.POINTS_COUNT} точки):`, symbolData)
     console.log(JSON.stringify(symbolData, null, 2))
 
-    setPreviewData(symbolData.features)
-
-    if (label) {
-      saveSymbol(symbolData)
-    } else {
-      setSaveError('Метка не выбрана — пример не будет сохранён')
+    // Учебный режим: пример ждёт подтверждения — штрихи остаются на канве,
+    // точки рисуются в debug-окне, отправка только по кнопке «Отправить».
+    if (modeRef.current === 'train') {
+      setPreviewData(symbolData.features)
+      setSaveError('')
+      setPendingExample({
+        symbolData,
+        color: strokes[0]?.color ?? penColor,
+      })
+      return true
     }
 
-    // Запускаем ML-распознавание независимо от того, сохраняем ли пример
-    // как размеченные данные (см. комментарий в runRecognition()).
+    // Обычный режим: модель отключена, распознавание не запускаем.
+    if (modeRef.current === 'normal') {
+      setPreviewData(null)
+      return false
+    }
+
+    // Умный режим: распознаём и заменяем рисунок текстом.
+    setPreviewData(null)
     runRecognition({
       strokeIds: strokes.map((s) => s.id),
       bbox,
@@ -332,11 +543,15 @@ function App() {
       strokesCount: strokes.length,
       color: strokes[0]?.color ?? penColor,
     })
+    return false
   }
 
   function handlePointerDown(e) {
     const pos = getPointerPos(e)
     if (!pos) return
+
+    // Учебный режим: пока пример ждёт подтверждения, рисование заблокировано
+    if (modeRef.current === 'train' && pendingExampleRef.current) return
 
     if (isPen) {
       if (recognitionTimeoutRef.current) {
@@ -352,7 +567,9 @@ function App() {
 
         // Если пользователь начал писать за пределами безопасной зоны Bounding Box — это новый символ
         if (isOutsideX || isOutsideY) {
-          processSymbol()
+          const becamePending = processSymbol()
+          // В учебном режиме пример ушёл на подтверждение — дальше рисовать нельзя
+          if (becamePending) return
         }
       }
     }
@@ -403,8 +620,48 @@ function App() {
   }
 
   function clearCanvas() {
+    // Очистка также отменяет пример, ожидающий подтверждения (учебный режим)
+    setPendingExample(null)
+    symbolBufferRef.current = []
+    setPreviewData(null)
     if (lines.length === 0 && texts.length === 0) return
     setHistory((h) => [...h, { lines, texts }])
+    setLines([])
+    setTexts([])
+  }
+
+  // Учебный режим: отправить пример в датасет и очистить канву
+  function confirmExample() {
+    const pending = pendingExampleRef.current
+    if (!pending) return
+
+    const label = selectedLabelRef.current ?? pending.symbolData.label
+    if (!label) {
+      setSaveError('Сначала выберите метку символа')
+      return
+    }
+
+    setPendingExample(null)
+    clearWorkspace()
+    submitExample({
+      ...pending.symbolData,
+      label,
+      userAgent: navigator.userAgent,
+    })
+  }
+
+  // Учебный режим: отменить пример — очистить канву без отправки
+  function cancelExample() {
+    setPendingExample(null)
+    setSaveError('')
+    clearWorkspace()
+  }
+
+  // Полная очистка рабочей области (после подтверждения/отмены примера)
+  function clearWorkspace() {
+    symbolBufferRef.current = []
+    setPreviewData(null)
+    setHistory([])
     setLines([])
     setTexts([])
   }
@@ -415,29 +672,22 @@ function App() {
     setTool('pen')
   }
 
-  function handleParseJson() {
-    try {
-      setJsonError('')
-      const parsed = JSON.parse(jsonInput)
-
-      const features = parsed.features ? parsed.features : parsed
-
-      if (!Array.isArray(features)) {
-        throw new Error('Данные должны быть массивом или объектом с полем features')
-      }
-      if (features.length === 0 || typeof features[0].x === 'undefined') {
-        throw new Error('Массив не содержит координат {x, y}')
-      }
-
-      setPreviewData(features)
-    } catch (err) {
-      setPreviewData(null)
-      setJsonError('Ошибка: неверный JSON формат')
-    }
-  }
-
   return (
     <div className="app">
+      {/* --- БАР РЕЖИМОВ --- */}
+      <div className="mode-bar">
+        {MODES.map((m) => (
+          <button
+            key={m.id}
+            type="button"
+            className={`mode-btn ${mode === m.id ? 'active' : ''}`}
+            onClick={() => applyMode(m.id)}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
       <aside className="toolbar">
         <h1 className="brand">Inkew</h1>
 
@@ -506,110 +756,154 @@ function App() {
         </div>
       </aside>
 
-      {/* --- ОКНО ПРЕВЬЮ JSON --- */}
-      <div className="debug-window">
-        <span className="group-label">Отладка (JSON)</span>
+      {/* --- ОКНО ОТЛАДКИ С ТОЧКАМИ (только учебный режим) --- */}
+      {mode === 'train' && (
+        <div className="debug-window">
+          <span className="group-label">Отладка (точки символа)</span>
 
-        {jsonError && <div className="debug-error">{jsonError}</div>}
+          {previewData ? (
+            <div className="debug-canvas-container">
+              <Stage width={150} height={150}>
+                <Layer>
+                  {/* Фон превью-окна */}
+                  <Rect x={0} y={0} width={150} height={150} fill="#f4f4f4" cornerRadius={6} />
 
-        {previewData && (
-          <div className="debug-canvas-container">
-            <Stage width={150} height={150}>
-              <Layer>
-                {/* Фон превью-окна */}
-                <Rect x={0} y={0} width={150} height={150} fill="#f4f4f4" cornerRadius={6} />
+                  {/* Бледно-серая линия соединяющая точки */}
+                  <KonvaLine
+                    points={previewData.flatMap(p => [(p.x * 60) + 75, (p.y * 60) + 75])}
+                    stroke="#c2c2c2"
+                    strokeWidth={1.5}
+                    tension={0}
+                  />
 
-                {/* Бледно-серая линия соединяющая точки */}
-                <KonvaLine
-                  points={previewData.flatMap(p => [(p.x * 60) + 75, (p.y * 60) + 75])}
-                  stroke="#c2c2c2"
-                  strokeWidth={1.5}
-                  tension={0}
-                />
+                  {/* Отрисовка точек */}
+                  {previewData.map((p, i) => {
+                    const x = (p.x * 60) + 75;
+                    const y = (p.y * 60) + 75;
 
-                {/* Отрисовка точек */}
-                {previewData.map((p, i) => {
-                  const x = (p.x * 60) + 75;
-                  const y = (p.y * 60) + 75;
+                    const isFirst = i === 0;
+                    const isLast = i === previewData.length - 1;
+                    const color = isFirst ? '#40c057' : isLast ? '#e03131' : '#F26419';
+                    const radius = isFirst || isLast ? 3.5 : 1.5;
 
-                  const isFirst = i === 0;
-                  const isLast = i === previewData.length - 1;
-                  const color = isFirst ? '#40c057' : isLast ? '#e03131' : '#F26419';
-                  const radius = isFirst || isLast ? 3.5 : 1.5;
+                    return (
+                      <Circle key={i} x={x} y={y} radius={radius} fill={color} />
+                    );
+                  })}
+                </Layer>
+              </Stage>
+            </div>
+          ) : (
+            <div className="save-status">
+              Нарисуйте символ — здесь появятся {CONFIG.POINTS_COUNT} ключевых точек
+            </div>
+          )}
 
-                  return (
-                    <Circle key={i} x={x} y={y} radius={radius} fill={color} />
-                  );
-                })}
-              </Layer>
-            </Stage>
-          </div>
-        )}
-      </div>
-
-      {/* --- ОКНО РАСПОЗНАВАНИЯ (модель + порог NS) --- */}
-      <div className="recognition-window">
-        <span className="group-label">Распознавание</span>
-
-        <div className="save-status">
-          {modelStatus === 'loading' && 'Модель: загрузка…'}
-          {modelStatus === 'ready' && 'Модель: готова ✅'}
-          {modelStatus === 'error' && `Модель: ошибка загрузки`}
+          {pendingExample ? (
+            <>
+              <div className="save-status">
+                Пример готов: «{selectedLabel ?? 'метка не выбрана'}». Отправить в датасет?
+              </div>
+              <div className="confirm-row">
+                <button
+                  type="button"
+                  className="action-btn confirm-btn"
+                  onClick={confirmExample}
+                  disabled={!selectedLabel}
+                >
+                  ✓ Отправить
+                </button>
+                <button
+                  type="button"
+                  className="action-btn danger"
+                  onClick={cancelExample}
+                >
+                  ✗ Отменить
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="save-status">
+              Выберите метку справа, нарисуйте символ и подтвердите отправку
+            </div>
+          )}
         </div>
-        {modelStatus === 'error' && <div className="debug-error">{modelError}</div>}
+      )}
 
-        {lastRecognition && (
-          <div className="recognition-details">
+      {/* --- ПРАВАЯ КОЛОНКА (скрыта в обычном режиме) --- */}
+      {mode !== 'normal' && (
+        <div className="right-column">
+          {/* --- ОКНО РАСПОЗНАВАНИЯ (модель + порог NS) --- */}
+          <div className="recognition-window">
+            <span className="group-label">Распознавание</span>
+
             <div className="save-status">
-              Итог: <b>{lastRecognition.label === CONFIG.NS_LABEL ? 'не распознано (NS)' : `«${lastRecognition.label}»`}</b>
+              {modelStatus === 'idle' && 'Модель: отключена'}
+              {modelStatus === 'loading' && 'Модель: загрузка…'}
+              {modelStatus === 'ready' && 'Модель: готова ✅'}
+              {modelStatus === 'error' && 'Модель: ошибка загрузки'}
             </div>
-            <div className="save-status">
-              top-1: «{lastRecognition.top1}» — {(lastRecognition.confidence * 100).toFixed(1)}%
-            </div>
-            <div className="save-status">
-              top-2: «{lastRecognition.top2}» — {(lastRecognition.top2Confidence * 100).toFixed(1)}%
-            </div>
-            <div className="save-status">
-              margin: {(lastRecognition.margin * 100).toFixed(1)}%
-            </div>
+            {modelStatus === 'error' && <div className="debug-error">{modelError}</div>}
+
+            {lastRecognition && (
+              <div className="recognition-details">
+                <div className="save-status">
+                  Итог: <b>{lastRecognition.label === CONFIG.NS_LABEL ? 'не распознано (NS)' : `«${lastRecognition.label}»`}</b>
+                </div>
+                <div className="save-status">
+                  top-1: «{lastRecognition.top1}» — {(lastRecognition.confidence * 100).toFixed(1)}%
+                </div>
+                <div className="save-status">
+                  top-2: «{lastRecognition.top2}» — {(lastRecognition.top2Confidence * 100).toFixed(1)}%
+                </div>
+                <div className="save-status">
+                  margin: {(lastRecognition.margin * 100).toFixed(1)}%
+                </div>
+              </div>
+            )}
+
+            {mode === 'train' && (
+              <div className="save-status">
+                Прогноз модели — подсказка: отправку примера вы подтверждаете сами
+              </div>
+            )}
           </div>
-        )}
 
-        {selectedLabel && (
-          <div className="save-status">
-            Активна ручная разметка «{selectedLabel}» — автозамена рисунка текстом отключена
-          </div>
-        )}
-      </div>
+          {/* --- ОКНО ВЫБОРА МЕТКИ СИМВОЛА (только учебный режим) --- */}
+          {mode === 'train' && (
+            <div className="labels-window">
+              <span className="group-label">Метка символа (сбор датасета)</span>
 
-      {/* --- ОКНО ВЫБОРА МЕТКИ СИМВОЛА --- */}
-      <div className="labels-window">
-        <span className="group-label">Метка символа (сбор датасета)</span>
+              <div className="labels-grid">
+                {CONFIG.LABELS_LIST.map((label) => (
+                  <button
+                    key={label}
+                    type="button"
+                    className={`label-btn ${selectedLabel === label ? 'active' : ''}`}
+                    title="Нажмите ещё раз, чтобы снять выбор"
+                    onClick={() =>
+                      setSelectedLabel((current) => (current === label ? null : label))
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
 
-        <div className="labels-grid">
-          {CONFIG.LABELS_LIST.map((label) => (
-            <button
-              key={label}
-              type="button"
-              className={`label-btn ${selectedLabel === label ? 'active' : ''}`}
-              title="Нажмите ещё раз, чтобы снять выбор"
-              onClick={() =>
-                setSelectedLabel((current) => (current === label ? null : label))
-              }
-            >
-              {label}
-            </button>
-          ))}
+              <div className="save-status">
+                {selectedLabel
+                  ? `Выбрано: «${selectedLabel}»`
+                  : 'Выберите метку перед рисованием'}
+              </div>
+              <div className="save-status">
+                Отправлено: {savedCount}
+                {queuedCount > 0 ? ` · ждут отправки: ${queuedCount}` : ''}
+              </div>
+              {saveError && <div className="debug-error">{saveError}</div>}
+            </div>
+          )}
         </div>
-
-        <div className="save-status">
-          {selectedLabel
-            ? `Выбрано: «${selectedLabel}»`
-            : 'Символ не выбран — пример не будет сохранён'}
-        </div>
-        <div className="save-status">Сохранено в data.jsonl: {savedCount}</div>
-        {saveError && <div className="debug-error">{saveError}</div>}
-      </div>
+      )}
 
       <Stage
         className="stage"
@@ -648,6 +942,7 @@ function App() {
               height={t.height}
               fontSize={t.fontSize}
               fontFamily="sans-serif"
+              wrap="none"
               fill={t.color}
               align="center"
               verticalAlign="middle"
