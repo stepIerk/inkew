@@ -9,7 +9,7 @@ const CONFIG = {
   MARGIN_X: 10,                // Допустимый отступ по оси X (в px) для объединения штрихов в один символ
   MARGIN_Y: 40,                // Допустимый отступ по оси Y (в px). (Сделан больше, чтобы не разрывать знак "=")
   POINTS_COUNT: 64,            // Количество ключевых точек для ML-модели
-  LABELS_LIST: ['0', '1', '2', '3', 'NS'], // Символы для выбора метки (сбор датасета)
+  LABELS_LIST: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '-', '=', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'NS'], // Символы для выбора метки (сбор датасета)
 
   // Пороги распознавания — совпадают с "14. Порог NS" в ноутбуке.
   CONFIDENCE_THRESHOLD: 0.8,   // минимальная уверенность top-1, чтобы принять предсказание
@@ -19,6 +19,14 @@ const CONFIG = {
   // Как вписывать распознанный текст в bbox исходного рисунка.
   TEXT_SIZE_FACTOR: 1.0,       // fontSize = max(bboxWidth, bboxHeight) * TEXT_SIZE_FACTOR
   TEXT_PADDING_RATIO: 0.12,    // доп. отступ вокруг bbox (доля от размера символа)
+
+  // Привязка нового символа к существующей строке. Если высота bbox нового
+  // символа отличается от высоты уже вставленного меньше, чем
+  // LINE_HEIGHT_MARGIN, и их вертикальные центры — меньше, чем
+  // LINE_Y_SPACE_MARGIN, новый символ «дописывается» в ту же строку:
+  // встаёт на той же высоте (по Y) и с теми же размерами, что и эталон.
+  LINE_HEIGHT_MARGIN: 20,      // px — допуск разницы высот символов одной строки
+  LINE_Y_SPACE_MARGIN: 25,     // px — допуск разницы вертикальных центров
 }
 
 const COLORS = [
@@ -430,6 +438,30 @@ function App() {
 
   // Заменяет штрихи (по их id) распознанным текстом, вписанным в bbox
   // исходного рисунка. Сохраняет снапшот для undo.
+  // Поиск «якоря» строки среди уже вставленных символов: если нарисованный
+  // символ близок по высоте (LINE_HEIGHT_MARGIN) и по вертикальному центру
+  // (LINE_Y_SPACE_MARGIN) к какому-то из уже вставленных, он дописывается в
+  // ту же строку — с размером и позицией эталона. Ищем по ВСЕМ текстам на
+  // канве, а не только по последнему: дописать в строку можно, даже если
+  // между делом рисовались другие штрихи и символы. Из подходящих кандидатов
+  // берём ближайший по вертикальному центру. Ограничений по X нет —
+  // дописывать можно на любом удалении от конца строки.
+  function findLineAnchor(bbox) {
+    const height = bbox.maxY - bbox.minY
+    const centerY = bbox.minY + height / 2
+
+    let best = null
+    for (const t of textsRef.current) {
+      if (t.srcHeight == null || t.srcCenterY == null) continue
+      if (Math.abs(t.srcHeight - height) >= CONFIG.LINE_HEIGHT_MARGIN) continue
+      if (Math.abs(t.srcCenterY - centerY) >= CONFIG.LINE_Y_SPACE_MARGIN) continue
+      if (!best || Math.abs(t.srcCenterY - centerY) < Math.abs(best.srcCenterY - centerY)) {
+        best = t
+      }
+    }
+    return best
+  }
+
   function replaceStrokesWithText(strokeIds, bbox, char, color) {
     setHistory((h) => [...h, { lines: linesRef.current, texts: textsRef.current }])
 
@@ -438,8 +470,16 @@ function App() {
     const width = bbox.maxX - bbox.minX
     const height = bbox.maxY - bbox.minY
     const size = Math.max(width, height, 1)
-    const pad = size * CONFIG.TEXT_PADDING_RATIO
-    const fontSize = size * CONFIG.TEXT_SIZE_FACTOR
+
+    // Привязка к строке: если рядом (по высоте и вертикальному центру) есть
+    // уже вставленный символ — новый встаёт на его высоту и с его размерами.
+    // По X символ остаётся там, где нарисован (центр сохраняется).
+    const anchor = findLineAnchor(bbox)
+    if (anchor) {
+      console.log(`↳ Символ «${char}» дописан в строку (эталон #${anchor.id})`)
+    }
+    const fontSize = anchor ? anchor.fontSize : size * CONFIG.TEXT_SIZE_FACTOR
+    const pad = fontSize * CONFIG.TEXT_PADDING_RATIO
 
     // Бокс должен вмещать сам глиф: для тонкой «1» (ширина bbox ≈ 0) или
     // узкого «0» ширины bbox + паддинги недостаточно, и Konva не отрисует
@@ -455,11 +495,17 @@ function App() {
         id: lineId++,
         char,
         x: centerX - boxWidth / 2,
-        y: bbox.minY - pad,
+        // При привязке берём y и высоту бокса у эталона — глиф центрируется
+        // вертикально точно так же, как эталонный символ строки.
+        y: anchor ? anchor.y : bbox.minY - pad,
         width: boxWidth,
-        height: height + pad * 2,
+        height: anchor ? anchor.height : height + pad * 2,
         fontSize,
         color,
+        // Исходные метрики нарисованного bbox — по ним следующие символы
+        // ищут строку, к которой можно привязаться (findLineAnchor).
+        srcHeight: height,
+        srcCenterY: bbox.minY + height / 2,
       },
     ])
   }
