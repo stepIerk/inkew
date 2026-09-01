@@ -46,9 +46,9 @@ let lineId = 0
 
 // === РЕЖИМЫ РАБОТЫ ===
 const MODES = [
-  { id: 'normal', label: '✏️ Рисование' }, // модель отключена — просто рисуем
-  { id: 'smart', label: '🧠 Умный' },      // модель включена — штрихи заменяются текстом
-  { id: 'train', label: '🎓 Обучение' },   // сбор датасета: метка → рисунок → подтверждение
+  { id: 'normal', label: '✏️', title: 'Рисование' }, // модель отключена — просто рисуем
+  { id: 'smart', label: '🧠', title: 'Умный' },      // модель включена — штрихи заменяются текстом
+  { id: 'train', label: '🎓', title: 'Обучение' },   // сбор датасета: метка → рисунок → подтверждение
 ]
 
 // === КУДА ОТПРАВЛЯТЬ ПРИМЕРЫ ИЗ УЧЕБНОГО РЕЖИМА ===
@@ -311,6 +311,13 @@ function App() {
   // === Режим работы: 'normal' | 'smart' | 'train' ===
   const [mode, setMode] = useState('normal')
 
+  // === Состояния плавающих плашек (выезжают/заезжают по кнопке) ===
+  // Палитра (цвет + толщина), правая колонка (распознавание + метки) и
+  // debug-окно. На узких экранах по умолчанию спрятаны — не мешают рисованию.
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [rightOpen, setRightOpen] = useState(() => window.innerWidth > 720)
+  const [debugOpen, setDebugOpen] = useState(() => window.innerWidth > 720)
+
   // === Пример, ожидающий подтверждения в учебном режиме ===
   // Рисование блокируется, пока пользователь не нажмёт «Отправить» или «Отменить».
   const [pendingExample, setPendingExample] = useState(null)
@@ -402,6 +409,12 @@ function App() {
     setPreviewData(null)
     if (next !== 'train') {
       setSelectedLabel(null)
+    }
+    // На телефоне при входе в умный/учебный режим раскрываем нужные плашки,
+    // чтобы окна распознавания/меток были под рукой.
+    if (window.innerWidth <= 720) {
+      if (next !== 'normal') setRightOpen(true)
+      if (next === 'train') setDebugOpen(true)
     }
     setMode(next)
   }
@@ -727,6 +740,8 @@ function App() {
             key={m.id}
             type="button"
             className={`mode-btn ${mode === m.id ? 'active' : ''}`}
+            title={m.title}
+            aria-label={m.title}
             onClick={() => applyMode(m.id)}
           >
             {m.label}
@@ -734,221 +749,263 @@ function App() {
         ))}
       </div>
 
-      <aside className="toolbar">
-        <h1 className="brand">Inkew</h1>
+      {/* --- КОМПАКТНАЯ ПАНЕЛЬ ИНСТРУМЕНТОВ --- */}
+      <aside className="toolbar" aria-label="Инструменты">
+        <button
+          type="button"
+          className={`tool-btn ${tool === 'pen' ? 'active' : ''}`}
+          title="Перо"
+          aria-label="Перо"
+          onClick={() => setTool('pen')}
+        >
+          ✏️
+        </button>
+        <button
+          type="button"
+          className={`tool-btn ${tool === 'eraser' ? 'active' : ''}`}
+          title="Ластик"
+          aria-label="Ластик"
+          onClick={() => setTool('eraser')}
+        >
+          🧽
+        </button>
+        <button
+          type="button"
+          className={`tool-btn ${paletteOpen ? 'active' : ''}`}
+          title="Цвет и толщина"
+          aria-label="Цвет и толщина"
+          onClick={() => setPaletteOpen((o) => !o)}
+        >
+          🎨
+        </button>
+        <button
+          type="button"
+          className="tool-btn"
+          title="Отменить"
+          aria-label="Отменить"
+          onClick={undo}
+          disabled={lines.length === 0 && texts.length === 0}
+        >
+          ↩️
+        </button>
+        <button
+          type="button"
+          className="tool-btn danger"
+          title="Очистить"
+          aria-label="Очистить"
+          onClick={clearCanvas}
+          disabled={lines.length === 0 && texts.length === 0}
+        >
+          🗑️
+        </button>
+      </aside>
 
-        <div className="tool-group">
-          <span className="group-label">Инструмент</span>
+      {/* --- ПАЛИТРА: цвет чернил и толщина (плашка выезжает рядом) --- */}
+      <div className={`palette-panel ${paletteOpen ? 'open' : ''}`}>
+        <div className="palette-header">
+          <span className="brand">Inkew</span>
           <button
             type="button"
-            className={`tool-btn ${tool === 'pen' ? 'active' : ''}`}
-            onClick={() => setTool('pen')}
+            className="palette-close"
+            title="Закрыть"
+            aria-label="Закрыть палитру"
+            onClick={() => setPaletteOpen(false)}
           >
-            ✏️ Перо
-          </button>
-          <button
-            type="button"
-            className={`tool-btn ${tool === 'eraser' ? 'active' : ''}`}
-            onClick={() => setTool('eraser')}
-          >
-            🧽 Ластик
+            ✕
           </button>
         </div>
 
-        <div className="tool-group">
-          <span className="group-label">Цвет чернил</span>
-          <div className="swatches">
-            {COLORS.map((color) => (
-              <button
-                key={color}
-                type="button"
-                className={`swatch ${penColor === color && tool === 'pen' ? 'selected' : ''}`}
-                style={{ backgroundColor: color }}
-                onClick={() => selectColor(color)}
-                aria-label={`Цвет ${color}`}
-              />
-            ))}
-          </div>
+        <div className="swatches">
+          {COLORS.map((color) => (
+            <button
+              key={color}
+              type="button"
+              className={`swatch ${penColor === color && tool === 'pen' ? 'selected' : ''}`}
+              style={{ backgroundColor: color }}
+              onClick={() => selectColor(color)}
+              aria-label={`Цвет ${color}`}
+            />
+          ))}
         </div>
 
-        <div className="tool-group">
-          <span className="group-label">Толщина: {brushSize}</span>
+        <div className="brush-row">
           <input
             type="range"
             min="1"
             max="40"
             value={brushSize}
+            aria-label="Толщина"
             onChange={(e) => setBrushSize(Number(e.target.value))}
           />
+          <span className="brush-size">{brushSize}</span>
         </div>
-
-        <div className="tool-group actions">
-          <button
-            type="button"
-            className="action-btn"
-            onClick={undo}
-            disabled={lines.length === 0 && texts.length === 0}
-          >
-            ↩ Отменить
-          </button>
-          <button
-            type="button"
-            className="action-btn danger"
-            onClick={clearCanvas}
-            disabled={lines.length === 0 && texts.length === 0}
-          >
-            🗑 Очистить
-          </button>
-        </div>
-      </aside>
+      </div>
 
       {/* --- ОКНО ОТЛАДКИ С ТОЧКАМИ (только учебный режим) --- */}
       {mode === 'train' && (
-        <div className="debug-window">
-          <span className="group-label">Отладка (точки символа)</span>
+        <>
+          <button
+            type="button"
+            className={`side-toggle debug-toggle ${debugOpen ? 'open' : ''}`}
+            title="Точки символа"
+            aria-label="Окно отладки: точки символа"
+            onClick={() => setDebugOpen((o) => !o)}
+          >
+            🧪
+          </button>
 
-          {previewData ? (
-            <div className="debug-canvas-container">
-              <Stage width={150} height={150}>
-                <Layer>
-                  {/* Фон превью-окна */}
-                  <Rect x={0} y={0} width={150} height={150} fill="#f4f4f4" cornerRadius={6} />
+          <div className={`debug-window ${debugOpen ? 'open' : ''}`}>
+            <span className="group-label">Точки символа</span>
 
-                  {/* Бледно-серая линия соединяющая точки */}
-                  <KonvaLine
-                    points={previewData.flatMap(p => [(p.x * 60) + 75, (p.y * 60) + 75])}
-                    stroke="#c2c2c2"
-                    strokeWidth={1.5}
-                    tension={0}
-                  />
+            {previewData ? (
+              <div className="debug-canvas-container">
+                <Stage width={150} height={150}>
+                  <Layer>
+                    {/* Фон превью-окна */}
+                    <Rect x={0} y={0} width={150} height={150} fill="#f4f4f4" cornerRadius={10} />
 
-                  {/* Отрисовка точек */}
-                  {previewData.map((p, i) => {
-                    const x = (p.x * 60) + 75;
-                    const y = (p.y * 60) + 75;
+                    {/* Бледно-серая линия соединяющая точки */}
+                    <KonvaLine
+                      points={previewData.flatMap(p => [(p.x * 60) + 75, (p.y * 60) + 75])}
+                      stroke="#c2c2c2"
+                      strokeWidth={1.5}
+                      tension={0}
+                    />
 
-                    const isFirst = i === 0;
-                    const isLast = i === previewData.length - 1;
-                    const color = isFirst ? '#40c057' : isLast ? '#e03131' : '#F26419';
-                    const radius = isFirst || isLast ? 3.5 : 1.5;
+                    {/* Отрисовка точек */}
+                    {previewData.map((p, i) => {
+                      const x = (p.x * 60) + 75;
+                      const y = (p.y * 60) + 75;
 
-                    return (
-                      <Circle key={i} x={x} y={y} radius={radius} fill={color} />
-                    );
-                  })}
-                </Layer>
-              </Stage>
-            </div>
-          ) : (
-            <div className="save-status">
-              Нарисуйте символ — здесь появятся {CONFIG.POINTS_COUNT} ключевых точек
-            </div>
-          )}
+                      const isFirst = i === 0;
+                      const isLast = i === previewData.length - 1;
+                      const color = isFirst ? '#40c057' : isLast ? '#e03131' : '#F26419';
+                      const radius = isFirst || isLast ? 3.5 : 1.5;
 
-          {pendingExample ? (
-            <>
-              <div className="save-status">
-                Пример готов: «{selectedLabel ?? 'метка не выбрана'}». Отправить в датасет?
+                      return (
+                        <Circle key={i} x={x} y={y} radius={radius} fill={color} />
+                      );
+                    })}
+                  </Layer>
+                </Stage>
               </div>
-              <div className="confirm-row">
-                <button
-                  type="button"
-                  className="action-btn confirm-btn"
-                  onClick={confirmExample}
-                  disabled={!selectedLabel}
-                >
-                  ✓ Отправить
-                </button>
-                <button
-                  type="button"
-                  className="action-btn danger"
-                  onClick={cancelExample}
-                >
-                  ✗ Отменить
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="save-status">
-              Выберите метку справа, нарисуйте символ и подтвердите отправку
-            </div>
-          )}
-        </div>
+            ) : (
+              <div className="save-status">Нарисуйте символ — точки появятся здесь</div>
+            )}
+
+            {pendingExample ? (
+              <>
+                <div className="save-status">
+                  Пример «{selectedLabel ?? 'метка не выбрана'}» — отправить?
+                </div>
+                <div className="confirm-row">
+                  <button
+                    type="button"
+                    className="action-btn confirm-btn"
+                    title="Отправить в датасет"
+                    aria-label="Отправить в датасет"
+                    onClick={confirmExample}
+                    disabled={!selectedLabel}
+                  >
+                    ✓
+                  </button>
+                  <button
+                    type="button"
+                    className="action-btn danger"
+                    title="Отменить"
+                    aria-label="Отменить"
+                    onClick={cancelExample}
+                  >
+                    ✗
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="save-status">Выберите метку, нарисуйте и подтвердите</div>
+            )}
+          </div>
+        </>
       )}
 
       {/* --- ПРАВАЯ КОЛОНКА (скрыта в обычном режиме) --- */}
       {mode !== 'normal' && (
-        <div className="right-column">
-          {/* --- ОКНО РАСПОЗНАВАНИЯ (модель + порог NS) --- */}
-          <div className="recognition-window">
-            <span className="group-label">Распознавание</span>
+        <>
+          <button
+            type="button"
+            className={`side-toggle right-toggle ${rightOpen ? 'open' : ''}`}
+            title="Распознавание и метки"
+            aria-label="Панель распознавания и меток"
+            onClick={() => setRightOpen((o) => !o)}
+          >
+            🔍
+          </button>
 
-            <div className="save-status">
-              {modelStatus === 'idle' && 'Модель: отключена'}
-              {modelStatus === 'loading' && 'Модель: загрузка…'}
-              {modelStatus === 'ready' && 'Модель: готова ✅'}
-              {modelStatus === 'error' && 'Модель: ошибка загрузки'}
-            </div>
-            {modelStatus === 'error' && <div className="debug-error">{modelError}</div>}
+          <div className={`right-column ${rightOpen ? 'open' : ''}`}>
+            {/* --- ОКНО РАСПОЗНАВАНИЯ (модель + порог NS) --- */}
+            <div className="recognition-window">
+              <span className="group-label">Распознавание</span>
 
-            {lastRecognition && (
-              <div className="recognition-details">
-                <div className="save-status">
-                  Итог: <b>{lastRecognition.label === CONFIG.NS_LABEL ? 'не распознано (NS)' : `«${lastRecognition.label}»`}</b>
-                </div>
-                <div className="save-status">
-                  top-1: «{lastRecognition.top1}» — {(lastRecognition.confidence * 100).toFixed(1)}%
-                </div>
-                <div className="save-status">
-                  top-2: «{lastRecognition.top2}» — {(lastRecognition.top2Confidence * 100).toFixed(1)}%
-                </div>
-                <div className="save-status">
-                  margin: {(lastRecognition.margin * 100).toFixed(1)}%
-                </div>
-              </div>
-            )}
-
-            {mode === 'train' && (
               <div className="save-status">
-                Прогноз модели — подсказка: отправку примера вы подтверждаете сами
+                {modelStatus === 'idle' && 'Модель: выкл.'}
+                {modelStatus === 'loading' && 'Модель: …'}
+                {modelStatus === 'ready' && 'Модель: ✓'}
+                {modelStatus === 'error' && 'Модель: ошибка'}
+              </div>
+              {modelStatus === 'error' && <div className="debug-error">{modelError}</div>}
+
+              {lastRecognition && (
+                <div className="recognition-details">
+                  <div className="save-status">
+                    Итог: <b>{lastRecognition.label === CONFIG.NS_LABEL ? 'NS' : `«${lastRecognition.label}»`}</b>
+                  </div>
+                  <div className="save-status">
+                    top-1: «{lastRecognition.top1}» — {(lastRecognition.confidence * 100).toFixed(1)}%
+                  </div>
+                  <div className="save-status">
+                    top-2: «{lastRecognition.top2}» — {(lastRecognition.top2Confidence * 100).toFixed(1)}%
+                  </div>
+                  <div className="save-status">
+                    margin: {(lastRecognition.margin * 100).toFixed(1)}%
+                  </div>
+                </div>
+              )}
+
+              
+            </div>
+
+            {/* --- ОКНО ВЫБОРА МЕТКИ СИМВОЛА (только учебный режим) --- */}
+            {mode === 'train' && (
+              <div className="labels-window">
+                <span className="group-label">Метка символа</span>
+
+                <div className="labels-grid">
+                  {CONFIG.LABELS_LIST.map((label) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className={`label-btn ${selectedLabel === label ? 'active' : ''}`}
+                      title="Нажмите ещё раз, чтобы снять выбор"
+                      onClick={() =>
+                        setSelectedLabel((current) => (current === label ? null : label))
+                      }
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="save-status">
+                  {selectedLabel ? `Выбрано: «${selectedLabel}»` : 'Выберите метку'}
+                </div>
+                <div className="save-status">
+                  Отправлено: {savedCount}
+                  {queuedCount > 0 ? ` · ждут: ${queuedCount}` : ''}
+                </div>
+                {saveError && <div className="debug-error">{saveError}</div>}
               </div>
             )}
           </div>
-
-          {/* --- ОКНО ВЫБОРА МЕТКИ СИМВОЛА (только учебный режим) --- */}
-          {mode === 'train' && (
-            <div className="labels-window">
-              <span className="group-label">Метка символа (сбор датасета)</span>
-
-              <div className="labels-grid">
-                {CONFIG.LABELS_LIST.map((label) => (
-                  <button
-                    key={label}
-                    type="button"
-                    className={`label-btn ${selectedLabel === label ? 'active' : ''}`}
-                    title="Нажмите ещё раз, чтобы снять выбор"
-                    onClick={() =>
-                      setSelectedLabel((current) => (current === label ? null : label))
-                    }
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="save-status">
-                {selectedLabel
-                  ? `Выбрано: «${selectedLabel}»`
-                  : 'Выберите метку перед рисованием'}
-              </div>
-              <div className="save-status">
-                Отправлено: {savedCount}
-                {queuedCount > 0 ? ` · ждут отправки: ${queuedCount}` : ''}
-              </div>
-              {saveError && <div className="debug-error">{saveError}</div>}
-            </div>
-          )}
-        </div>
+        </>
       )}
 
       <Stage
